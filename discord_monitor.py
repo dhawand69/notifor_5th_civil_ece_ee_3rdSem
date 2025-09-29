@@ -9,7 +9,7 @@ from typing import Optional, List
 
 # Configuration
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-URL = "https://results.beup.ac.in/BTech5thSem2024_B2022Results.aspx"
+URL = "https://results.beup.ac.in/BTech4thSem2024_B2022Results.aspx"
 
 CHECK_INTERVAL = 2
 SCHEDULED_INTERVAL = 7200
