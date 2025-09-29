@@ -1,3 +1,4 @@
+```python
 import asyncio
 import os
 import time
@@ -114,21 +115,30 @@ class DiscordMonitor:
 
                 return resp.status in (200, 204)
 
-    async def send_file(self, filename: str, content: str) -> bool:
+    async def send_file(self, session: aiohttp.ClientSession, filename: str, content: str) -> bool:
         """
-        Upload a HTML file as an attachment so Discord displays it as downloadable.
+        Upload a file attachment alone, using provided session for connection reuse.
+        Handles rate limit from headers.
         """
-        if not DISCORD_WEBHOOK_URL:
-            return False
-
         form = aiohttp.FormData()
         bio = BytesIO(content.encode("utf-8"))
         bio.seek(0)
         form.add_field("file", bio, filename=filename, content_type="text/html")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(DISCORD_WEBHOOK_URL, data=form) as resp:
-                return resp.status in (200, 204)
+        async with session.post(DISCORD_WEBHOOK_URL, data=form) as resp:
+            # update rate limit
+            now = time.time()
+            self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
+            reset_after = resp.headers.get("X-RateLimit-Reset-After")
+            if reset_after:
+                self.rate_limit_reset = now + float(reset_after)
+
+            if resp.status == 429:
+                retry_after = float(resp.headers.get("retry-after", 1))
+                await asyncio.sleep(retry_after)
+                return await self.send_file(session, filename, content)
+
+            return resp.status in (200, 204)
 
     async def create_embed(
         self,
@@ -155,25 +165,27 @@ class DiscordMonitor:
         total = len(RESULT_URLS)
         success_count = 0
 
-        for idx, url in enumerate(RESULT_URLS, start=1):
-            reg_no = url.split("=")[-1]
-            try:
-                async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
+            for idx, url in enumerate(RESULT_URLS, start=1):
+                reg_no = url.split("=")[-1]
+                try:
                     async with session.get(url, timeout=10) as resp:
                         if resp.status == 200:
                             html = await resp.text()
                             filename = f"result_{reg_no}.html"
-                            if await self.send_file(filename, html):
+                            if await self.send_file(session, filename, html):
                                 success_count += 1
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-            # progress update
-            await self.send_discord_message(
-                f"🔄 Download progress: {success_count}/{total} completed"
-            )
+                # Enforce minimal delay to avoid rate bursts
+                await asyncio.sleep(1)
+                # Send progress update
+                await self.send_discord_message(
+                    f"🔄 Download progress: {success_count}/{total} completed"
+                )
 
-        # final summary embed
+        # Final summary embed
         embed = await self.create_embed(
             title="📥 Result Download Summary",
             description=f"✅ {success_count}/{total} files uploaded",
@@ -187,7 +199,7 @@ class DiscordMonitor:
             async with aiohttp.ClientSession() as session:
                 async with session.get(URL, timeout=10) as resp:
                     return "UP" if resp.status == 200 else "DOWN"
-        except Exception:
+        except:
             return "DOWN"
 
     async def monitor_once(self):
@@ -266,3 +278,4 @@ if __name__ == "__main__":
         print("❌ Exception in monitor:", e)
         traceback.print_exc()
         raise
+```
