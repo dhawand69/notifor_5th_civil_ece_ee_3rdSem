@@ -11,9 +11,8 @@ from typing import Optional, List
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 URL = "https://results.beup.ac.in/BTech4thSem2024_B2022Results.aspx"
 
-CHECK_INTERVAL = 2
-SCHEDULED_INTERVAL = 7200
-CONTINUOUS_DURATION = 900
+CHECK_INTERVAL = 2            # seconds between checks
+CONTINUOUS_DURATION = 900     # 15 minutes in seconds
 
 RESULT_URLS = [
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148040",
@@ -83,11 +82,9 @@ class DiscordMonitor:
         if not DISCORD_WEBHOOK_URL:
             print("ERROR: DISCORD_WEBHOOK_URL not set")
             return False
-
         now = time.time()
         if self.rate_limit_remaining <= 0 and now < self.rate_limit_reset:
             await asyncio.sleep(self.rate_limit_reset - now)
-
         payload = {"content": content, "username": username}
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
@@ -130,7 +127,7 @@ class DiscordMonitor:
         except:
             return "DOWN"
 
-    async def download_and_zip(self) -> Optional[BytesIO]:
+    async def download_and_zip(self) -> BytesIO:
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             async with aiohttp.ClientSession() as session:
@@ -150,6 +147,12 @@ class DiscordMonitor:
         zip_buffer.seek(0)
         return zip_buffer
 
+    async def continuous_status(self, duration: int):
+        end_time = time.time() + duration
+        while time.time() < end_time:
+            await self.send_discord_message("✅ Website is still UP")
+            await asyncio.sleep(CHECK_INTERVAL)
+
     async def monitor_once(self):
         status = await self.check_site()
         if status != "UP":
@@ -159,36 +162,36 @@ class DiscordMonitor:
         await self.send_discord_message("🎉 Website is LIVE! Starting downloads…")
         zip_data = await self.download_and_zip()
 
-        if zip_data:
-            sent = await self.send_file("results.zip", zip_data)
-            if sent:
-                await self.send_discord_message(
-                    f"📥 Successfully uploaded all {len(RESULT_URLS)} results in a single ZIP"
-                )
-                return
+        # Attempt ZIP upload
+        if zip_data and await self.send_file("results.zip", zip_data):
+            await self.send_discord_message(
+                f"📥 Successfully uploaded all {len(RESULT_URLS)} results in a single ZIP"
+            )
+        else:
+            # Fallback to individual uploads
+            await self.send_discord_message(
+                "⚠️ ZIP upload failed; falling back to individual uploads"
+            )
+            async with aiohttp.ClientSession() as session:
+                for idx, url in enumerate(RESULT_URLS, start=1):
+                    reg = url.split("=")[-1]
+                    try:
+                        async with session.get(url, timeout=10) as resp:
+                            if resp.status == 200:
+                                bio = BytesIO((await resp.text()).encode("utf-8"))
+                                await self.send_file(f"result_{reg}.html", bio)
+                    except:
+                        pass
+                    if idx % 10 == 0 or idx == len(RESULT_URLS):
+                        await self.send_discord_message(
+                            f"🔄 Fallback uploaded {idx}/{len(RESULT_URLS)}"
+                        )
+            await self.send_discord_message(
+                "📥 Fallback: individual files uploaded"
+            )
 
-        await self.send_discord_message(
-            "⚠️ ZIP upload failed; falling back to individual uploads"
-        )
-        async with aiohttp.ClientSession() as session:
-            for idx, url in enumerate(RESULT_URLS, start=1):
-                reg = url.split("=")[-1]
-                try:
-                    async with session.get(url, timeout=10) as resp:
-                        if resp.status == 200:
-                            html = await resp.text()
-                            bio = BytesIO(html.encode("utf-8"))
-                            await self.send_file(f"result_{reg}.html", bio)
-                except:
-                    pass
-                if idx % 10 == 0 or idx == len(RESULT_URLS):
-                    await self.send_discord_message(
-                        f"🔄 Fallback uploaded {idx}/{len(RESULT_URLS)}"
-                    )
-
-        await self.send_discord_message(
-            "📥 Fallback: individual files uploaded"
-        )
+        # Continue sending "site is up" for next 15 minutes
+        await self.continuous_status(CONTINUOUS_DURATION)
 
 async def main():
     monitor = DiscordMonitor()
