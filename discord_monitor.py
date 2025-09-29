@@ -73,6 +73,7 @@ RESULT_URLS = [
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=23156148902"
 ]
 
+
 class DiscordMonitor:
     def __init__(self):
         self.last_status = None
@@ -158,10 +159,11 @@ class DiscordMonitor:
 
     async def download_results(self) -> bool:
         success, fail = [], []
-        async with aiohttp.ClientSession() as session:
-            for url in RESULT_URLS:
-                reg_no = url.split("=")[-1]
-                try:
+        total = len(RESULT_URLS)
+        for index, url in enumerate(RESULT_URLS, start=1):
+            reg_no = url.split("=")[-1]
+            try:
+                async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=10) as r:
                         if r.status == 200:
                             html = await r.text()
@@ -172,9 +174,15 @@ class DiscordMonitor:
                                 fail.append(reg_no)
                         else:
                             fail.append(reg_no)
-                except Exception:
-                    fail.append(reg_no)
+            except Exception:
+                fail.append(reg_no)
 
+            # Send progress update after each download
+            await self.send_discord_message(
+                f"🔄 Download progress: {len(success)}/{total} completed"
+            )
+
+        # Final summary embed
         embed = await self.create_embed(
             title="📥 Result Download Summary",
             description=f"✅ {len(success)} succeeded, ❌ {len(fail)} failed",
@@ -182,6 +190,7 @@ class DiscordMonitor:
             fields=[
                 {"name": "Successes", "value": str(len(success)), "inline": True},
                 {"name": "Failures",  "value": str(len(fail)),    "inline": True},
+                {"name": "Total",     "value": str(total),          "inline": True},
             ]
         )
         await self.send_discord_message("", embeds=[embed])
@@ -223,7 +232,7 @@ class DiscordMonitor:
             await self.send_discord_message("", embeds=[embed])
 
     async def monitor_continuous(self):
-        await self.send_discord_message("🔍 Monitoring started", None)
+        await self.send_discord_message("🔍 Monitoring started")
         while True:
             current = await self.check_site()
             now = time.time()
