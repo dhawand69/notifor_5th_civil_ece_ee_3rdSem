@@ -3,18 +3,26 @@ import os
 import time
 import aiohttp
 import json
+from io import BytesIO
 from datetime import datetime
 from typing import Optional, List
 
 # Configuration
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-URL = "https://results.beup.ac.in/BTech4thSem2024_B2022Results.aspx"
+URL = "https://results.beup.ac.in/BTech5thSem2024_B2022Results.aspx"
 
 CHECK_INTERVAL = 2
 SCHEDULED_INTERVAL = 7200
 CONTINUOUS_DURATION = 900
 
 RESULT_URLS = [
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148040",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148042",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148051",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148018",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148012",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22104148015",
+    "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22101148008",
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148023",
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=22156148001",
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=23156148904",
@@ -74,55 +82,66 @@ class DiscordMonitor:
         self.rate_limit_remaining = 5
         self.rate_limit_reset = 0
 
-    async def send_discord_message(self, content: str, embeds: Optional[List[dict]] = None, username: str = "BEUP Monitor"):
-        """Send message to Discord webhook with rate limiting"""
+    async def send_discord_message(
+        self,
+        content: str,
+        embeds: Optional[List[dict]] = None,
+        username: str = "BEUP Monitor"
+    ) -> bool:
         if not DISCORD_WEBHOOK_URL:
             print("Discord webhook URL not configured")
             return False
 
-        # Check rate limit
         current_time = time.time()
         if self.rate_limit_remaining <= 0 and current_time < self.rate_limit_reset:
-            wait_time = self.rate_limit_reset - current_time
-            print(f"Rate limited. Waiting {wait_time:.2f} seconds...")
-            await asyncio.sleep(wait_time)
+            await asyncio.sleep(self.rate_limit_reset - current_time)
 
-        payload = {
-            "content": content,
-            "username": username,
-            "avatar_url": "https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
-        }
-        
+        payload = {"content": content, "username": username}
         if embeds:
             payload["embeds"] = embeds
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(DISCORD_WEBHOOK_URL, json=payload) as response:
-                    # Update rate limit info
-                    self.rate_limit_remaining = int(response.headers.get('X-RateLimit-Remaining', 5))
-                    reset_after = response.headers.get('X-RateLimit-Reset-After')
-                    if reset_after:
-                        self.rate_limit_reset = current_time + float(reset_after)
-                    
-                    if response.status == 429:  # Rate limited
-                        retry_after = float(response.headers.get('retry-after', 1))
-                        print(f"Rate limited. Retrying after {retry_after} seconds...")
-                        await asyncio.sleep(retry_after)
-                        return await self.send_discord_message(content, embeds, username)
-                    
-                    if response.status == 204:
-                        print(f"Message sent successfully: {content[:50]}...")
-                        return True
-                    else:
-                        print(f"Failed to send message. Status: {response.status}")
-                        return False
-        except Exception as e:
-            print(f"Error sending Discord message: {e}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
+                self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
+                reset_after = resp.headers.get("X-RateLimit-Reset-After")
+                if reset_after:
+                    self.rate_limit_reset = current_time + float(reset_after)
+
+                if resp.status == 429:
+                    retry_after = float(resp.headers.get("retry-after", 1))
+                    await asyncio.sleep(retry_after)
+                    return await self.send_discord_message(content, embeds, username)
+
+                return resp.status in (200, 204)
+
+    async def send_file(self, filename: str, content: str) -> bool:
+        if not DISCORD_WEBHOOK_URL:
             return False
 
-    async def create_embed(self, title: str, description: str, color: int, fields: Optional[List[dict]] = None):
-        """Create Discord embed"""
+        form = aiohttp.FormData()
+        bio = BytesIO(content.encode("utf-8"))
+        bio.seek(0)
+        form.add_field("file", bio, filename=filename, content_type="text/html")
+        form.add_field(
+            "payload_json",
+            json.dumps({
+                "content": f"📄 Uploaded result: `{filename}`",
+                "username": "BEUP Result Monitor"
+            }),
+            content_type="application/json"
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(DISCORD_WEBHOOK_URL, data=form) as resp:
+                return resp.status in (200, 204)
+
+    async def create_embed(
+        self,
+        title: str,
+        description: str,
+        color: int,
+        fields: Optional[List[dict]] = None
+    ) -> dict:
         embed = {
             "title": title,
             "description": description,
@@ -133,176 +152,115 @@ class DiscordMonitor:
                 "icon_url": "https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
             }
         }
-        
         if fields:
             embed["fields"] = fields
-            
         return embed
 
-    async def download_results(self):
-        """Download all student results and send as files to Discord"""
-        successful_downloads = []
-        failed_downloads = []
-        
+    async def download_results(self) -> bool:
+        success, fail = [], []
         async with aiohttp.ClientSession() as session:
             for url in RESULT_URLS:
+                reg_no = url.split("=")[-1]
                 try:
-                    async with session.get(url, timeout=10) as response:
-                        if response.status == 200:
-                            html_content = await response.text()
-                            reg_no = url.split('=')[-1]
-                            
-                            # Send as file to Discord (simplified approach)
-                            successful_downloads.append(reg_no)
+                    async with session.get(url, timeout=10) as r:
+                        if r.status == 200:
+                            html = await r.text()
+                            filename = f"result_{reg_no}.html"
+                            if await self.send_file(filename, html):
+                                success.append(reg_no)
+                            else:
+                                fail.append(reg_no)
                         else:
-                            failed_downloads.append(url.split('=')[-1])
-                except Exception as e:
-                    failed_downloads.append(url.split('=')[-1])
-                    print(f"Failed to download {url}: {e}")
+                            fail.append(reg_no)
+                except Exception:
+                    fail.append(reg_no)
 
-        # Create status embed
         embed = await self.create_embed(
-            title="📥 Result Download Status",
-            description=f"Downloaded results for {len(successful_downloads)} students",
-            color=0x00ff00 if len(failed_downloads) == 0 else 0xffaa00,
+            title="📥 Result Download Summary",
+            description=f"✅ {len(success)} succeeded, ❌ {len(fail)} failed",
+            color=0x00ff00 if not fail else 0xff0000,
             fields=[
-                {
-                    "name": "✅ Successful Downloads",
-                    "value": f"{len(successful_downloads)}/{len(RESULT_URLS)}",
-                    "inline": True
-                },
-                {
-                    "name": "❌ Failed Downloads", 
-                    "value": str(len(failed_downloads)),
-                    "inline": True
-                }
+                {"name": "Successes", "value": str(len(success)), "inline": True},
+                {"name": "Failures",  "value": str(len(fail)),    "inline": True},
             ]
         )
-        
         await self.send_discord_message("", embeds=[embed])
-        return len(successful_downloads) > 0
+        return bool(success)
 
-    async def check_site(self):
-        """Check if the main site is accessible"""
+    async def check_site(self) -> str:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(URL, timeout=10) as response:
-                    return "UP" if response.status == 200 else "DOWN"
-        except Exception as e:
-            print(f"Site check failed: {e}")
+                async with session.get(URL, timeout=10) as resp:
+                    return "UP" if resp.status == 200 else "DOWN"
+        except:
             return "DOWN"
 
     async def monitor_once(self):
-        """Single monitoring check - for GitHub Actions"""
-        current_status = await self.check_site()
-        current_time = time.time()
-        
-        print(f"Site status: {current_status}")
-        
-        if current_status == "UP":
+        status = await self.check_site()
+        if status == "UP":
             embed = await self.create_embed(
-                title="🎉 BEUP Results Website is LIVE!",
-                description="The results website is now accessible. Starting result downloads...",
-                color=0x00ff00,
-                fields=[
-                    {
-                        "name": "🌐 Website Status",
-                        "value": "✅ Online",
-                        "inline": True
-                    },
-                    {
-                        "name": "⏰ Check Time",
-                        "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "inline": True
-                    }
+                "🎉 Website is LIVE!",
+                "Starting result downloads…",
+                0x00ff00,
+                [
+                    {"name": "Status", "value": "✅ Online", "inline": True},
+                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
-            
-            await self.send_discord_message("@everyone Results are live!", embeds=[embed])
-            
-            # Download results
-            await asyncio.sleep(2)  # Brief pause
+            await self.send_discord_message("@everyone", embeds=[embed])
+            await asyncio.sleep(2)
             await self.download_results()
-            
         else:
             embed = await self.create_embed(
-                title="🔴 BEUP Results Website is DOWN",
-                description="The results website is currently not accessible.",
-                color=0xff0000,
-                fields=[
-                    {
-                        "name": "🌐 Website Status", 
-                        "value": "❌ Offline",
-                        "inline": True
-                    },
-                    {
-                        "name": "⏰ Check Time",
-                        "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "inline": True
-                    }
+                "🔴 Website is DOWN",
+                "Results site not accessible",
+                0xff0000,
+                [
+                    {"name": "Status", "value": "❌ Offline", "inline": True},
+                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
-            
             await self.send_discord_message("", embeds=[embed])
 
     async def monitor_continuous(self):
-        """Continuous monitoring - for local testing"""
-        await self.send_discord_message("🔍 **BEUP Monitor Started** - Monitoring for result announcements...")
-        
+        await self.send_discord_message("🔍 Monitoring started", None)
         while True:
-            current_status = await self.check_site()
-            current_time = time.time()
-            status_changed = current_status != self.last_status
+            current = await self.check_site()
+            now = time.time()
+            changed = current != self.last_status
 
-            if status_changed:
-                if current_status == "UP":
-                    self.continuous_until = current_time + CONTINUOUS_DURATION
+            if changed:
+                if current == "UP":
+                    self.continuous_until = now + CONTINUOUS_DURATION
                     self.results_downloaded = False
-                    
-                    embed = await self.create_embed(
-                        title="🎉 Website is LIVE!",
-                        description="Starting 15-minute continuous monitoring + downloading results",
-                        color=0x00ff00
-                    )
-                    
+                    embed = await self.create_embed("🎉 Site LIVE!", "Downloading results…", 0x00ff00)
                     await self.send_discord_message("@everyone", embeds=[embed])
                     asyncio.create_task(self.download_results())
                 else:
-                    embed = await self.create_embed(
-                        title="🔴 Website is DOWN",
-                        description="The results website is currently offline",
-                        color=0xff0000
-                    )
-                    
+                    embed = await self.create_embed("🔴 Site DOWN", "Site offline", 0xff0000)
                     await self.send_discord_message("", embeds=[embed])
                     self.results_downloaded = False
-                    
-            elif current_status == "UP" and current_time < self.continuous_until:
-                time_left = int(self.continuous_until - current_time)
+
+            elif current == "UP" and now < self.continuous_until:
+                time_left = int(self.continuous_until - now)
                 await self.send_discord_message(f"✅ Still live ({time_left}s left)")
-                
                 if not self.results_downloaded and time_left > 60:
                     self.results_downloaded = True
                     asyncio.create_task(self.download_results())
-                    
-            elif current_time - self.last_scheduled >= SCHEDULED_INTERVAL and current_time >= self.continuous_until:
-                status_text = "✅ Live" if current_status == "UP" else "🔴 Down"
-                await self.send_discord_message(f"📅 **Scheduled Check**: {status_text}")
-                self.last_scheduled = current_time
 
-            self.last_status = current_status
+            elif now - self.last_scheduled >= SCHEDULED_INTERVAL and now >= self.continuous_until:
+                text = "✅ Live" if current == "UP" else "🔴 Down"
+                await self.send_discord_message(f"📅 Scheduled: {text}")
+                self.last_scheduled = now
+
+            self.last_status = current
             await asyncio.sleep(CHECK_INTERVAL)
 
 async def main():
-    """Main function"""
     monitor = DiscordMonitor()
-    
-    # Check if running in GitHub Actions
-    if os.getenv('GITHUB_ACTIONS'):
-        print("Running in GitHub Actions - single check mode")
+    if os.getenv("GITHUB_ACTIONS"):
         await monitor.monitor_once()
     else:
-        print("Running locally - continuous monitoring mode")
         await monitor.monitor_continuous()
 
 if __name__ == "__main__":
