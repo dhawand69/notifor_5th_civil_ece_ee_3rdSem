@@ -1,4 +1,3 @@
-```python
 import asyncio
 import os
 import time
@@ -103,22 +102,21 @@ class DiscordMonitor:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
-                # Update rate limit info
                 self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
                 reset_after = resp.headers.get("X-RateLimit-Reset-After")
                 if reset_after:
                     self.rate_limit_reset = now + float(reset_after)
 
                 if resp.status == 429:
-                    retry = float(resp.headers.get("retry-after", 1))
-                    await asyncio.sleep(retry)
+                    retry_after = float(resp.headers.get("retry-after", 1))
+                    await asyncio.sleep(retry_after)
                     return await self.send_discord_message(content, embeds, username)
 
                 return resp.status in (200, 204)
 
     async def send_file(self, filename: str, content: str) -> bool:
         """
-        Upload a file attachment alone, so Discord treats it as downloadable.
+        Upload a HTML file as an attachment so Discord displays it as downloadable.
         """
         if not DISCORD_WEBHOOK_URL:
             return False
@@ -170,12 +168,12 @@ class DiscordMonitor:
             except Exception:
                 pass
 
-            # Progress update
+            # progress update
             await self.send_discord_message(
                 f"🔄 Download progress: {success_count}/{total} completed"
             )
 
-        # Final summary
+        # final summary embed
         embed = await self.create_embed(
             title="📥 Result Download Summary",
             description=f"✅ {success_count}/{total} files uploaded",
@@ -201,7 +199,7 @@ class DiscordMonitor:
                 0x00ff00,
                 [
                     {"name": "Status", "value": "✅ Online", "inline": True},
-                    {"name": "Time", "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
+                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
             await self.send_discord_message("@everyone", embeds=[embed])
@@ -214,7 +212,7 @@ class DiscordMonitor:
                 0xff0000,
                 [
                     {"name": "Status", "value": "❌ Offline", "inline": True},
-                    {"name": "Time", "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
+                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
             await self.send_discord_message("", embeds=[embed])
@@ -261,5 +259,10 @@ async def main():
         await monitor.monitor_continuous()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-```
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        import traceback
+        print("❌ Exception in monitor:", e)
+        traceback.print_exc()
+        raise
