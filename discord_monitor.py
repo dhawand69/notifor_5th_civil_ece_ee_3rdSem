@@ -1,8 +1,8 @@
+```python
 import asyncio
 import os
 import time
 import aiohttp
-import json
 from io import BytesIO
 from datetime import datetime
 from typing import Optional, List
@@ -93,9 +93,9 @@ class DiscordMonitor:
             print("Discord webhook URL not configured")
             return False
 
-        current_time = time.time()
-        if self.rate_limit_remaining <= 0 and current_time < self.rate_limit_reset:
-            await asyncio.sleep(self.rate_limit_reset - current_time)
+        now = time.time()
+        if self.rate_limit_remaining <= 0 and now < self.rate_limit_reset:
+            await asyncio.sleep(self.rate_limit_reset - now)
 
         payload = {"content": content, "username": username}
         if embeds:
@@ -103,19 +103,23 @@ class DiscordMonitor:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
+                # Update rate limit info
                 self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
                 reset_after = resp.headers.get("X-RateLimit-Reset-After")
                 if reset_after:
-                    self.rate_limit_reset = current_time + float(reset_after)
+                    self.rate_limit_reset = now + float(reset_after)
 
                 if resp.status == 429:
-                    retry_after = float(resp.headers.get("retry-after", 1))
-                    await asyncio.sleep(retry_after)
+                    retry = float(resp.headers.get("retry-after", 1))
+                    await asyncio.sleep(retry)
                     return await self.send_discord_message(content, embeds, username)
 
                 return resp.status in (200, 204)
 
     async def send_file(self, filename: str, content: str) -> bool:
+        """
+        Upload a file attachment alone, so Discord treats it as downloadable.
+        """
         if not DISCORD_WEBHOOK_URL:
             return False
 
@@ -123,14 +127,6 @@ class DiscordMonitor:
         bio = BytesIO(content.encode("utf-8"))
         bio.seek(0)
         form.add_field("file", bio, filename=filename, content_type="text/html")
-        form.add_field(
-            "payload_json",
-            json.dumps({
-                "content": f"📄 Uploaded result: `{filename}`",
-                "username": "BEUP Result Monitor"
-            }),
-            content_type="application/json"
-        )
 
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, data=form) as resp:
@@ -158,50 +154,42 @@ class DiscordMonitor:
         return embed
 
     async def download_results(self) -> bool:
-        success, fail = [], []
         total = len(RESULT_URLS)
-        for index, url in enumerate(RESULT_URLS, start=1):
+        success_count = 0
+
+        for idx, url in enumerate(RESULT_URLS, start=1):
             reg_no = url.split("=")[-1]
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=10) as r:
-                        if r.status == 200:
-                            html = await r.text()
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status == 200:
+                            html = await resp.text()
                             filename = f"result_{reg_no}.html"
                             if await self.send_file(filename, html):
-                                success.append(reg_no)
-                            else:
-                                fail.append(reg_no)
-                        else:
-                            fail.append(reg_no)
+                                success_count += 1
             except Exception:
-                fail.append(reg_no)
+                pass
 
-            # Send progress update after each download
+            # Progress update
             await self.send_discord_message(
-                f"🔄 Download progress: {len(success)}/{total} completed"
+                f"🔄 Download progress: {success_count}/{total} completed"
             )
 
-        # Final summary embed
+        # Final summary
         embed = await self.create_embed(
             title="📥 Result Download Summary",
-            description=f"✅ {len(success)} succeeded, ❌ {len(fail)} failed",
-            color=0x00ff00 if not fail else 0xff0000,
-            fields=[
-                {"name": "Successes", "value": str(len(success)), "inline": True},
-                {"name": "Failures",  "value": str(len(fail)),    "inline": True},
-                {"name": "Total",     "value": str(total),          "inline": True},
-            ]
+            description=f"✅ {success_count}/{total} files uploaded",
+            color=0x00ff00 if success_count == total else 0xff0000
         )
         await self.send_discord_message("", embeds=[embed])
-        return bool(success)
+        return success_count > 0
 
     async def check_site(self) -> str:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(URL, timeout=10) as resp:
                     return "UP" if resp.status == 200 else "DOWN"
-        except:
+        except Exception:
             return "DOWN"
 
     async def monitor_once(self):
@@ -213,7 +201,7 @@ class DiscordMonitor:
                 0x00ff00,
                 [
                     {"name": "Status", "value": "✅ Online", "inline": True},
-                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
+                    {"name": "Time", "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
             await self.send_discord_message("@everyone", embeds=[embed])
@@ -226,7 +214,7 @@ class DiscordMonitor:
                 0xff0000,
                 [
                     {"name": "Status", "value": "❌ Offline", "inline": True},
-                    {"name": "Time",   "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
+                    {"name": "Time", "value": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "inline": True}
                 ]
             )
             await self.send_discord_message("", embeds=[embed])
@@ -274,3 +262,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
