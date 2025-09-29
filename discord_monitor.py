@@ -73,7 +73,6 @@ RESULT_URLS = [
     "https://results.beup.ac.in/ResultsBTech4thSem2024_B2022Pub.aspx?Sem=IV&RegNo=23156148902"
 ]
 
-
 class DiscordMonitor:
     def __init__(self):
         self.last_status = None
@@ -89,13 +88,16 @@ class DiscordMonitor:
         embeds: Optional[List[dict]] = None,
         username: str = "BEUP Monitor"
     ) -> bool:
+        print("STEP: send_discord_message called")
         if not DISCORD_WEBHOOK_URL:
-            print("Discord webhook URL not configured")
+            print("ERROR: DISCORD_WEBHOOK_URL not set")
             return False
 
         now = time.time()
         if self.rate_limit_remaining <= 0 and now < self.rate_limit_reset:
-            await asyncio.sleep(self.rate_limit_reset - now)
+            wait = self.rate_limit_reset - now
+            print(f"INFO: Rate limited, sleeping for {wait:.2f}s")
+            await asyncio.sleep(wait)
 
         payload = {"content": content, "username": username}
         if embeds:
@@ -103,6 +105,7 @@ class DiscordMonitor:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
+                print(f"INFO: Discord message status {resp.status}")
                 self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
                 reset_after = resp.headers.get("X-RateLimit-Reset-After")
                 if reset_after:
@@ -110,23 +113,21 @@ class DiscordMonitor:
 
                 if resp.status == 429:
                     retry_after = float(resp.headers.get("retry-after", 1))
+                    print(f"WARNING: Hit rate limit, retrying after {retry_after}s")
                     await asyncio.sleep(retry_after)
                     return await self.send_discord_message(content, embeds, username)
 
                 return resp.status in (200, 204)
 
     async def send_file(self, session: aiohttp.ClientSession, filename: str, content: str) -> bool:
-        """
-        Upload a file attachment alone, using provided session for connection reuse.
-        Handles rate limit from headers.
-        """
+        print(f"STEP: send_file called for {filename}")
         form = aiohttp.FormData()
         bio = BytesIO(content.encode("utf-8"))
         bio.seek(0)
         form.add_field("file", bio, filename=filename, content_type="text/html")
 
         async with session.post(DISCORD_WEBHOOK_URL, data=form) as resp:
-            # update rate limit
+            print(f"INFO: send_file status {resp.status} for {filename}")
             now = time.time()
             self.rate_limit_remaining = int(resp.headers.get("X-RateLimit-Remaining", 5))
             reset_after = resp.headers.get("X-RateLimit-Reset-After")
@@ -135,6 +136,7 @@ class DiscordMonitor:
 
             if resp.status == 429:
                 retry_after = float(resp.headers.get("retry-after", 1))
+                print(f"WARNING: File upload rate limited, retrying after {retry_after}s")
                 await asyncio.sleep(retry_after)
                 return await self.send_file(session, filename, content)
 
@@ -147,6 +149,7 @@ class DiscordMonitor:
         color: int,
         fields: Optional[List[dict]] = None
     ) -> dict:
+        print("STEP: create_embed called")
         embed = {
             "title": title,
             "description": description,
@@ -162,30 +165,32 @@ class DiscordMonitor:
         return embed
 
     async def download_results(self) -> bool:
+        print("STEP: download_results started")
         total = len(RESULT_URLS)
         success_count = 0
 
         async with aiohttp.ClientSession() as session:
             for idx, url in enumerate(RESULT_URLS, start=1):
                 reg_no = url.split("=")[-1]
+                print(f"STEP: downloading {reg_no}")
                 try:
                     async with session.get(url, timeout=10) as resp:
+                        print(f"INFO: GET {url} status {resp.status}")
                         if resp.status == 200:
                             html = await resp.text()
                             filename = f"result_{reg_no}.html"
                             if await self.send_file(session, filename, html):
                                 success_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"ERROR: Exception downloading {reg_no}: {e}")
 
-                # Enforce minimal delay to avoid rate bursts
-                await asyncio.sleep(1)
-                # Send progress update
+                await asyncio.sleep(1)  # Avoid bursts
+                print(f"STEP: progress update {success_count}/{total}")
                 await self.send_discord_message(
                     f"🔄 Download progress: {success_count}/{total} completed"
                 )
 
-        # Final summary embed
+        print("STEP: download_results completed")
         embed = await self.create_embed(
             title="📥 Result Download Summary",
             description=f"✅ {success_count}/{total} files uploaded",
@@ -195,14 +200,18 @@ class DiscordMonitor:
         return success_count > 0
 
     async def check_site(self) -> str:
+        print("STEP: check_site called")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(URL, timeout=10) as resp:
+                    print(f"INFO: site check status {resp.status}")
                     return "UP" if resp.status == 200 else "DOWN"
-        except:
+        except Exception as e:
+            print(f"ERROR: Exception in check_site: {e}")
             return "DOWN"
 
     async def monitor_once(self):
+        print("STEP: monitor_once called")
         status = await self.check_site()
         if status == "UP":
             embed = await self.create_embed(
@@ -230,6 +239,7 @@ class DiscordMonitor:
             await self.send_discord_message("", embeds=[embed])
 
     async def monitor_continuous(self):
+        print("STEP: monitor_continuous started")
         await self.send_discord_message("🔍 Monitoring started")
         while True:
             current = await self.check_site()
@@ -250,6 +260,7 @@ class DiscordMonitor:
 
             elif current == "UP" and now < self.continuous_until:
                 time_left = int(self.continuous_until - now)
+                print(f"STEP: still live, {time_left}s left")
                 await self.send_discord_message(f"✅ Still live ({time_left}s left)")
                 if not self.results_downloaded and time_left > 60:
                     self.results_downloaded = True
@@ -257,6 +268,7 @@ class DiscordMonitor:
 
             elif now - self.last_scheduled >= SCHEDULED_INTERVAL and now >= self.continuous_until:
                 text = "✅ Live" if current == "UP" else "🔴 Down"
+                print(f"STEP: scheduled check, status {text}")
                 await self.send_discord_message(f"📅 Scheduled: {text}")
                 self.last_scheduled = now
 
@@ -264,6 +276,7 @@ class DiscordMonitor:
             await asyncio.sleep(CHECK_INTERVAL)
 
 async def main():
+    print("STEP: main started")
     monitor = DiscordMonitor()
     if os.getenv("GITHUB_ACTIONS"):
         await monitor.monitor_once()
